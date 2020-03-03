@@ -6,7 +6,7 @@
 
 **内容存储** （CS，*Content Store* ，第3.3节）是一个对数据包（ *Data packet* ）的缓存。为了满足将来请求相同数据的兴趣，将到达数据包尽可能长地放置在此缓存中。
 
-**未决兴趣表** （PIT，*Pending Interest Table* ，第3.4节）跟踪（ *track* ）向上游内容源转发的兴趣（ *Interest* ），构造一条反向路劲，以便可以将数据向下游发送到其请求者。它还包含用于 **环路检测** 和 **测量目的** 的最近满足的兴趣（ *recently satisfied Interests* ）。
+**兴趣表** （PIT，*Pending Interest Table* ，第3.4节）跟踪（ *track* ）向上游内容源转发的兴趣（ *Interest* ），构造一条反向路劲，以便可以将数据向下游发送到其请求者。它还包含用于 **环路检测** 和 **测量目的** 的最近满足的兴趣（ *recently satisfied Interests* ）。
 
 **Dead Nonce List** （第3.5节）作为未决兴趣表的补充，以进行循环检测。
 
@@ -124,7 +124,109 @@ NFD通过实现`nfd::cs::Policy`的多个子类提供多种策略实现 可以�
 
   这些公共方法调用相应的纯虚函数：`doAfterInsert`、`doAfterRefresh`、`doBeforeErase`和`doBeforeUse`。 这些纯虚函数以及`evictEntries`应该在子类中重写（ *overriden* ）。
 
-  根据通过上述API收到的信息，策略会维护一个内部清除索引，该索引用于确定在CS超过容量限制时应清除哪个数据包。在每个策略实施中都定义了此内部清理索引的结构。它应该通过迭代器（`nfd::cs::iterator`）引用CS条目（存储在表中）。 当策略决定逐出一个条目时，它应该发出beforeEvict信号来通知CS从表中删除该条目，然后删除该策略的内部清除索引中的相应项目。 请注意，对于通过beforeEvict信号驱逐的条目，不会调用beforeErase。
+  根据通过上述API收到的信息，策略会维护一个内部清除索引，该索引用于确定在CS超过容量限制时应清除哪个数据包。在每个策略实施中都定义了此内部清理索引的结构。它应该通过迭代器（`nfd::cs::iterator`）引用CS条目（存储在表中）。当策略决定逐出一个条目时，它应该发出`beforeEvict`信号来通知CS从表中删除该条目，然后删除该策略的内部清除索引中的相应项目。请注意，对于**通过`beforeEvict`信号驱逐的条目，不会调用`beforeErase`。**
 
-- 
+  每个函数实现时的建议步骤如下：
+
+  - 在`doAfterInsert`中，策略决定是否接受新条目。如果接受，则应将新条目的迭代器插入内部清除索引；否则，将调用`cs::Policy::evictEntries`通知CS进行清理。然后，该策略应检查CS大小是否超过容量限制，如果是，则逐出一个条目（可能通过调用`evictEntries`函数）；
+  - 在`doAfterRefresh`中，策略可能会更新其清理索引，以处理同一数据再次到达；
+  - 在`doBeforeErase`中，策略应删除其清理索引中的相应条目；
+  - 在`doBeforeUse`中，策略可以更新其清除索引，以标记指定的条目满足了一个传入的兴趣。
+  - 在`evictEntries`中，策略应逐出足够的条目，以使CS不会超过容量限制。
+
+- **优先级FIFO缓存策略（Priority FIFO cache policy）**
+
+  `Priority-FIFO`是默认的`cs::Policy`。优先级FIFO会在每次插入时逐出，因为其性能更可预测，否则，定期清除一批条目可能会导致数据包转发中的抖动。Priority-FIFO使用三个队列来跟踪CS中的数据包：
+
+  - **未经请求的队列（ *unsolicited queue* ）** 包含具有未经请求的数据的条目；
+  - **过时队列（ *stale queue* ）**包含具有过时数据的条目；
+  - **FIFO队列包**含带有新数据的条目。
+
+  在任何时候，一个条目完全属于一个队列，并且在该队列中只能出现一次。优先级FIFO保持每个条目所属的队列。
+
+  这些字段与存储在队列中的Table迭代器一起，在Table和队列之间建立双向关系。
+
+  **变异操作**（ *Mutation operations* ）时必须保持这种关系：
+
+  - 插入条目时，该条目将放置在表格中；
+  - 逐出一个条目时，其表迭代器将从其队列的开头删除，并且该条目也从表中删除；
+  - 当新条目变为陈旧时（由计时器控制）时，其表迭代器将从FIFO队列移至过时队列，并且条目上的队列指示符和迭代器也将更新；
+  - 使用请求的数据更新主动/过期条目时，其表迭代器从主动/过期队列移至FIFO队列，并且条目上的队列指示符和迭代器也更新。
+
+  尽管名为队列（ *queue* ），但这里的队列并不是真正的先进先出队列，因为条目可以在队列之间移动（请参阅上面的变异操作）。移动条目时，其表迭代器将从旧队列中分离出来，并附加到新队列中。`std::list`用作基础容器，`std::queue`和`std::deque`不适合，因为它们无法有效地分离节点。
+
+- **LRU缓存策略（LRU cache policy）**
+
+  LRU缓存策略实现了最近最少使用的缓存替换算法，该算法首先丢弃最近最少使用的项目。LRU每次插入都会被逐出，因为它的性能更可预测，否则，定期清除一批条目可能会导致数据包转发中的抖动。
+
+  LRU使用一个队列来跟踪CS中的数据使用情况，表迭代器存储在队列中。在任何时候，使用或刷新条目时，其表迭代器都会重定位到队列的尾部。同样，当新插入一个条目时，其表迭代器会被推入队列的尾部。当需要逐出一个条目时，将从其队列的开头删除其表迭代器，并从表中删除该条目。
+
+  队列使用`boost::multi_index_container`[11]作为基础容器，因为它在基准测试中表现良好。`boost::multi_index_container::sequenced_index`用于插入，更新使用和刷新，`boost::multi_index_container::ordered_unique_index`用于通过`Table::iterator`擦除。
+
+### 3.4 兴趣表（PIT）
+
+兴趣表（PIT）跟踪向上游内容源转发的兴趣，以便可以将数据向下游发送到其请求者[9]。它还包含用于 **环路检测** 和 **测量目的** 的最近满足的兴趣。这种数据结构在NDN文献中称为 **未决兴趣表**（ *pending Interest table* ） ； 但是，**NFD的PIT包含未满足的兴趣和最近满足的兴趣**，因此“兴趣表”是一个更准确的术语，但缩写为“ PIT”。
+
+PIT是PIT条目的集合，仅用于转发（ *forwarding* ，第4节）。 3.4.1节介绍了PIT条目的结构和语义，以及转发如何使用它。3.4.2节介绍了PIT的结构和算法，以及转发如何使用它。PIT算法的实现在3.8节中讨论。
+
+#### 3.4.1 PIT条目（PIT Entry）
+
+图6显示了PIT，PIT条目、入记录（ *in-records* ）、出记录（ *out-records* ）以及它们的关系。
+
+![图6  PIT及其相关的entities](assets/1583238384240.png)
+
+<center>图6  PIT及其相关的entities</center>
+
+- **PIT条目（PIT entry）**
+
+  PIT条目（`nfd::pit::Entry`）表示未决兴趣或最近满足的兴趣。如果两个兴趣包具有相同的名称（ *Name* ）和选择器（ *Selectors* ）[1]，则它们是相似的（ *similar* ），多个相似兴趣共享同一PIT条目。
+
+  每个PIT条目均由一个兴趣标识。除名称（ *Name* ）和选择器（ *Selectors* ）外，此兴趣中的所有字段均无关紧要。
+
+  每个PIT条目包含一个入记录（ *in-records* ）、一个出记录（ *out-records* ）和一个计时器（ *timer* ），如下所述。另外，允许转发策略存储有关PIT条目，入记录和出记录的任意信息（第5.1.3节）。
+
+- **入记录（In record）**
+
+  入记录（`nfd::pit::InRecord`）表示兴趣的下游 *face* （ *downsream face* ）。下游 *face* 是内容的请求者 ：兴趣来自下游（ *downstream* ），且数据也会流向下游。
+
+  入记录（ *in-record* ）中存储有下列信息：
+
+  - *face* 的引用
+  - 来自此 *face* 的最后一个兴趣包中的`Nonce`
+  - 来自此 *face* 的最后一个兴趣包到达的时间戳（ *timestamp* ）
+  - 最后一个兴趣包
+
+  > ps: 上述提到的最后一个兴趣包，即为包含入记录的PIT条目中的最新插入的一个兴趣包
+
+  *incoming Interest pipeline* （第4.2.1节）会插入或更新入记录（ *in-record* ）。当一个未决兴趣时被满足时，所有的入记录（ *每个PIT条目中都会维护一个入记录列表，这边说的所有的入记录指的是被满足兴趣所在的PIT条目中保存的入记录列表* ）都会被 *incoming Data pipeline* 删除（第4.3.1节）。
+
+  在最后一个来自同个 *face* 的相同兴趣包到达后，经过`LifetyLifetime`，对应的入记录将过期。当所有的入记录都到期时，PIT条目也会到期。如果一个PIT条目包含至少一个未过期的入记录，则称其为未决。
+
+- **出记录（Out record）**
+
+  出记录（`nfd::pit::OutRecord`）表示兴趣的上游 *face* （ *upstream face* ） 。上游 *face* 是潜在的内容来源：兴趣被转发到上游（ *upstream* ），且而数据来自上游。
+  出记录（ *out-record* ）中存储有下列信息：
+
+  - *face* 的引用
+  - 发送给此 *face* 的最后一个兴趣包中的Nonce
+  - 发送给此 *face* 的最后一个兴趣包的时间戳（ *timestamp* ）
+  - `Nacked`字段：指示最后一个发出的（ *outgoing* ）的兴趣已被Nacked，此字段还记录了Nack的原因（ *Nack reason* ）
+
+  *outgoing Interest pipeline* （第4.2.5节）会插入或更新出记录（ *out-record* ）。当来自该 *face* 的数据满足未决兴趣时，出记录将由 *incoming Data pipeline* 删除（第4.3.1节）。
+
+  发送最后一个兴趣包后，如果经过了`LifetyLifetime`，则记录过期（ *expires* ）。
+
+- **计时器（Timer）**
+
+  每个PIT条目都有一个计时器，即到期计时器（ *expiry timer* ）。该计时器由 *forwarding pipeline* 使用（第4节），并且在PIT条目到期时触发（第4.2.1节）。
+
+#### 3.4.2 PIT
+
+PIT（`nfd::Pit`）是一个包含PIT条目的表，由`<Name，Selectors>` *tuple* 索引。支持通常的插入和删除操作。 `Pit::insert`方法首先查找具有相似兴趣的PIT条目，并仅在不存在的情况下插入一个。没有完全匹配的单独方法，因为 *forwarding* 不需要插入PIT条目就可以确定它的存在。PIT是不可迭代的，因为 *forwarding* 不需要这样做。
+
+数据匹配算法（`Pit::findAllDataMatches`）查找数据包可以满足的所有兴趣。它以数据包作为输入参数。返回值是此数据包可以满足的PIT条目的集合。此算法不会删除任何PIT条目。
+
+`cleanupOnFaceRemoval`函数是去除 *face* 时的联合FIB-PIT清理功能。 有关更多信息，请参见第3.1.1节。
+
+### 3.5 Dead Nonce List
 
