@@ -338,3 +338,88 @@ PIT（`nfd::Pit`）是一个包含PIT条目的表，由`<Name，Selectors>` *tup
 
   测量访问器（`nfd::MeasurementsAccessor`）是访问 *Measurements* 表的策略的代理。其API与“测量表”相似。在返回任何度量条目之前，访问者将查找“策略选择表”（第3.6节），以确认发出请求的策略是否拥有该度量条目。如果检测到访问冲突，则返回null而不是条目。
 
+### 3.8 NameTree
+
+`NameTree`是FIB（第3.1节）、PIT（第3.4节）、策略选择表（第3.6节）和测量表（第3.7节）的通用索引结构。使用通用索引是可行的，因为这四个表的索引有很多共性：FIB、策略选择和度量均按名称索引，而PIT则按名称和选择器索引[1]。使用公用索引是有益的，因为在这四个表上的查找通常是相关的（ 例如，在插入PIT条目后，在 *incoming Interest pipeline* （第4.2.1节）中调用FIB最长前缀匹配），并且使用公共索引可以减少数据包处理期间索引查找的次数，索引占用的内存也相对减少。
+
+`NameTree`数据结构在3.8.1节中介绍。`NameTree`的操作和算法在3.8.2节中介绍。第3.8.3节介绍了`NameTree`如何通过在表之间添加快捷方式来帮助减少索引查找的次数。
+
+#### 3.8.1 结构（Structure）
+
+`NameTree`是 *NameTree entry* 的集合，按 *Name* 索引并以树结构组织。FIB、PIT、策略选择和度量值条目被附加到`NameTree`条目上。
+
+- **NameTree entry**
+
+  一个 *NameTree entry* （`nfd::name_tree::Entry`）包含以下信息：
+
+  - 名称前缀（ *the name prefix* ）
+  - 指向父条目的指针（ *a pointer to the parent entry* ）
+  - 指向子条目的指针（ *pointers to child entries* ）
+  - 零或一个FIB条目（ *zero or one FIB entry* ）
+  - 零个或多个PIT条目（ *zero or more PIT entry* ）
+  - 零或一个策略选择条目（ *zero or one Strategy Choice entry* ）
+  - 零个或一个测量条目（ *zero or one Measurements entry* ）
+
+  `NameTree`条目通过父和子指针形成树结构。树形结构遵循名称层次结构：父条目的名称前缀是其子条目的名称前缀减去最后一个 *component*。
+
+  附加到同一 `NameTree`条目的FIB、Strategy Choice、Measurements条目与NameTree条目具有相同的名称。在大多数情况下，附加到`NameTree`条目的PIT条目可以与`NameTree`条目具有相同的名称，仅在选择器中有所不同。作为一种特殊情况，将其兴趣名称以隐式摘要（ *implicit digest* ） *component* 结尾的PIT条目附加到与兴趣名称减去隐式摘要 *component* 对应的`NameTree`条目上，以使全匹配（ *all match* ）算法（第3.8.2节） 根据到来的数据包（ *Data packet* ）的名称（不计算其隐式摘要）可以找到此PIT条目。
+
+- **NameTree hash table**
+
+  除了树结构之外，`NameTree`条目还被组织到哈希表中，以实现更快的基于名称的查找。具体地说，哈希表使我们无需树的根即可定位深层条目。我们决定从头开始自己实现哈希表（`nfd::name_tree::Hashtable`），而不是使用现有的库，以便我们可以更好地控制性能调整。
+
+  哈希表包含许多存储桶（ *buckets* ）。要插入一个条目，我们使用`CityHash` [12]计算其名称前缀的哈希值。选择此哈希函数是因为其速度很快。具体来说，哈希值是通过名称成分的TLV表示来计算的，但不覆盖外部的`NAME-TYPE` `TLV-LENGTH`字段，这使我们可以在需要时一起计算名称的所有前缀的哈希值。然后将该条目映射到由哈希值选择的存储桶（ *buckets* ）中。如果将多个名称映射到同一个存储桶（ *buckets* ），则通过在双向链表中链接条目来解决哈希冲突。
+
+  随着存储的`NameTree`条目数的更改，哈希表会自动调整大小。调整大小操作由`nfd::name_tree::HashtableOptions`中的参数控制。 参数设置是在空存储桶的浪费内存和链接时间开销之间的权衡。当负载因子（条目数除以存储桶数）高于扩展阈值（ *expand threshold* ）或低于收缩阈值（ *shrink threshold* ）时，将触发调整大小操作，其中每个`NameTree`条目都将移至新哈希表中的相应存储桶。
+
+  我们引入一个`nfd::name_tree::Node`来存储哈希表实现中使用的字段，包括：
+
+  - 哈希值，因此调整大小操作不需要重新计算它
+  - 指向存储桶双向链接列表中的上一个节点的指针
+  - 指向存储桶双向链接列表中的下一个节点的指针
+  - `NameTree`条目（节点拥有条目，条目具有指向节点的指针）
+
+#### 3.8.2 操作和算法（Operations and Algorithms）
+
+- **插入和删除操作（Insertion and Deletion operations）**
+
+  **lookup/insertion** 操作（`NameTree::lookup`）查找或插入给定`Name`的条目。为了维护树结构，必要时插入祖先（ *ancestor* ）条目。当插入FIB/PIT/策略选择/度量条目时，将调用此操作。
+
+  如果一个`NameTree`条目上没有存储FIB/PIT/策略选择/度量值条目，并且没有子条目，使用 **conditional deletion** 操作（`NameTree::eraseEntryIfEmpty`）可删除该条目。如果满足相同要求，则被删除条目的祖先也将被删除。删除FIB/PIT/策略选择/度量条目时，将调用此操作。
+
+- **匹配算法（Matching algorithms）**
+
+  **完全匹配** （ *exact match* ）算法（`NameTree::findExactMatch`）查找具有指定名称的条目，如果该条目不存在，则返回null。
+
+  **最长前缀匹配** （ *longest prefix match* ）算法（`NameTree::findLongestPrefixMatch`）查找指定名称的最长前缀匹配项，并通过可选的 *EntrySelector* 进行过滤。*EntrySelector* 是一个 *predicate* ，用于确定是否可以接受（返回）条目。该算法的实现方式为：从查找哈希表中的全名开始；如果不存在`NameTree`条目或被 *predicate* 拒绝，则删除一个名称组件并再次查找，直到找到可接受的`NameTree`条目。FIB的最长前缀匹配算法（第3.1.1节）调用此算法，其 *predicate* 仅在包含FIB条目的情况下接受`NameTree`条目。策略选择查找有效策略算法（第3.6.1节）调用此算法，其 *predicate* 仅在包含策略选择条目的情况下接受NameTree条目。
+
+  **全匹配** （ *all match* ）算法（`NameTree::findAllMatches`）枚举作为给定名称前缀的所有条目，并通过可选的 *EntrySelector* 进行过滤。该算法实现为：首先执行最长的前缀匹配；然后删除名称组件，直到到达根条目为止。PIT数据匹配算法调用该算法（第3.4.2节）。
+
+- **枚举算法（Enumeration algorithms）**
+
+  **完整枚举** （ *full enumeration* ）算法（`NameTree::fullEnumerate`）枚举所有条目，并通过可选的 *EntrySelector* 进行过滤。FIB枚举和策略选择枚举使用此算法。
+
+  **部分枚举** （ *partial enumeration* ）算法（`NameTree::partialEnumerate`）枚举指定名称前缀（ *Name prefix* ）下的所有条目，并通过可选的 *EntrySubTreeSelector* 进行过滤。*EntrySubTreeSelector* 是一个双谓词（ *double-predicate* ），用于确定是否可以接受条目以及是否应访问其子项。在运行时策略更改（第5.1.3节）期间使用此算法清除命名空间下的 *StrategyInfo items* 。
+
+#### 3.8.3 捷径（Shortcuts）
+
+`NameTree`的好处之一是可以减少数据包转发过程中索引查找的次数。为了实现此目标，一种方法是让转发管道显式执行`NameTree`查找，并使用`NameTree`条目的字段。但是，这不是理想的，因为引入`NameTree`是为了提高四个表的性能，并且它不应更改转发管道的过程。
+
+为了减少索引查找的数量，但仍将`NameTree`隐藏在转发管道之外，我们在表之间添加了快捷方式。每个FIB/PIT/策略选择/度量条目均包含指向相应`NameTree`条目的指针，`NameTree`条目包含指向FIB/PIT/策略选择/度量条目和父级`NameTree`条目的指针。因此，例如，在给定一个PIT条目的情况下，可以通过指针$^4$在恒定时间内检索相应的`NameTree`条目，然后通过`NameTree`条目检索或附加 *Measurements* 条目，或者通过指向父条目的指针找到最长的前缀匹配FIB条目。
+
+> $^4$ 仅当PIT条目的兴趣名称不以隐式摘要结尾时才适用； 否则，将执行常规查找。
+
+采用这种方法，`NameTree`条目仍然可以进行转发。为了也隐藏`NameTree`条目，我们在表算法中引入了新的重载，这些重载将相关的表条目替换为`Name`。这些重载包括：
+
+- `Fib::findLongestPrefixMatch`可以接受PIT条目或Measurements条目来代替Name
+- `StrategyChoice::findEffectiveStrategy`可以接受PIT条目或Measurements条目来代替Name
+- `Measurements::get`可以接受FIB条目或PIT条目代替名称
+
+带有表条目的重载通常比带有Name的重载更有效。通过使用这些重载，转发可以利用减少索引查找的优势，但无需直接处理`NameTree`条目。
+
+为了支持这些重载，`NameTree`提供了`NameTree::getEntry`函数模板，该模板返回从FIB/PIT/Strategy Choice/Measurements条目链接的NameTree条目。`NameTree::getEntry`允许一个表从另一表的条目中检索相应的`NameTree`，而无需知道该条目的内部结构。它还允许表将来离开`NameTree`，而不会破坏其他代码：假设有一天 *Measurements* 不再基于NameTree，`NameTree::getEntry`可以使用Measurements条目中的“兴趣名称”执行查找；`Fib::findLongestPrefixMatch`仍然可以接受`Measurements`条目，尽管它并不比使用Name更有效。
+
+
+
+
+
