@@ -29,7 +29,6 @@
         }
         return new Gitalk({
             title: title,
-            id: id,
             clientID: 'fa290550335fbd43a74e',
             clientSecret: '4c7ba77a9bb7f1f0694f29af4d18c00479bba5c6',
             repo: 'nfd-developer-guide-zh',
@@ -74,9 +73,9 @@
         plugins: [
             function(hook, vm) {
                 hook.doneEach(function(){
-                    const elem = document.getElementById('gitalk-container');
-                    elem && (elem.innerHTML = "");
-                    NewGitalk().render('gitalk-container');
+                    //const elem = document.getElementById('gitalk-container');
+                    //elem && (elem.innerHTML = "");
+                    //NewGitalk().render('gitalk-container');
                 });
             }
         ]
