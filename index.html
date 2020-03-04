@@ -21,6 +21,8 @@
 <script>
     function NewGitalk() {
         let id = decodeURI(`${window.location.hash}`);
+        console.log(`id: ${id}`);
+        console.log(window.location);
         const title = `Gitalk评论${decodeURI(window.location.pathname)}${window.location.hash}`;
         if (id.length > 50) {
             id = id.substr(0, 50);

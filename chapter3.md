@@ -306,3 +306,11 @@ PIT（`nfd::Pit`）是一个包含PIT条目的表，由`<Name，Selectors>` *tup
 
 有效的策略搜索算法被 *forwarding* 用于 *ContentStore miss pipeline* （第4.2.4节）， *incoming Data pipeline* （第4.3.1节）和 *incoming Nack pipeline* （第4.4.1节）。每个传入数据包（ *packet* ）最多调用两次。
 
+### 3.7 测量表（Measurement Table）
+
+转发策略使用“测量表”来存储有关名称前缀的测量信息。策略可以在 *PIT* 和 *Measurements* 中存储任意信息（第5.1.3节）。*Measurements Table* 按名称空间建立索引，因此适合存储与名称空间相关联但不特定于兴趣的信息。
+
+测量表的结构和算法在第3.7.1节中概述。 第3.7.2节介绍了NFD其余部分如何使用“测量表”。 在3.8节中讨论了 *Measurements Table* 算法的实现。
+
+#### 3.7.1 结构（Structure）
+
