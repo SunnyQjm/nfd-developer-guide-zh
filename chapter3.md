@@ -314,3 +314,27 @@ PIT（`nfd::Pit`）是一个包含PIT条目的表，由`<Name，Selectors>` *tup
 
 #### 3.7.1 结构（Structure）
 
+- **Measurements entry**
+
+  *Measurements* 条目（`nfd::measurements::Entry`）包含一个名称，以及给策略（ *strategy* ）提供的存储和检索任意信息的API（`nfd::StrategyInfoHost`，第5.1.3节）。虽然添加一些策略之间可以共享的标准指标（ *standard metrics* ）也是可以的，例如往返时间（ *trip time* ），延迟（ *delay* ），抖动（ *jitter* ）等。但是，我们认为每种策略都有其独特的需求，如果有效的策略没有使用到这些标准指标的话，添加这些标准指标将成为不必要的开销。因此，当前Measurements条目不包含标准指标。
+
+- **Measurements Table**
+
+  *Measurements* 表（`nfd::Measurements`）是 *Measurements* 条目的集合。
+
+  `Measurements::get`方法用于查找或插入一个 *Measurements* 条目。参数是名称、FIB条目或PIT条目。由于 *Measurements* 表的实现方式，传递FIB条目或PIT条目比使用名称更有效。`Measurements::getParent`方法用于查找或插入父名称空间的`Measurements`条目。
+
+  与其他表不同，*Measurements* 表没有删除操作。而是，每个条目都有有限的生存期，并且在其生存期结束时会自动删除。如果需要的话，策略可以调用`Measurements::extendLifetime`来请求延长条目的生存期。
+
+  *Measurements* 表支持精确匹配和最长前缀匹配查找，以检索现有条目。
+
+#### 3.7.2 使用（Usage）
+
+*Measurements* 表仅由转发策略使用。*Measurements* 表中有多少条目以及访问它们的频率由转发策略决定。一个编写良好的转发策略存储不超过O(log(N))个条目，并且执行不超过O(N)个查找，其中N是传入数据包的数量加上传出数据包的数量。
+
+- **测量访问器（Measurements Accessor）**
+
+  回顾一下NFD具有按命名空间选择策略（第3.6节），允许每个转发策略访问该策略管理的名称空间下的 *Measurements* 表的部分。此限制是由测量访问器（ *Measurements Accessor* ）实现的。
+
+  测量访问器（`nfd::MeasurementsAccessor`）是访问 *Measurements* 表的策略的代理。其API与“测量表”相似。在返回任何度量条目之前，访问者将查找“策略选择表”（第3.6节），以确认发出请求的策略是否拥有该度量条目。如果检测到访问冲突，则返回null而不是条目。
+
