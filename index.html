@@ -73,9 +73,9 @@
         plugins: [
             function(hook, vm) {
                 hook.doneEach(function(){
-                    //const elem = document.getElementById('gitalk-container');
-                    //elem && (elem.innerHTML = "");
-                    //NewGitalk().render('gitalk-container');
+                    const elem = document.getElementById('gitalk-container');
+                    elem && (elem.innerHTML = "");
+                    NewGitalk().render('gitalk-container');
                 });
             }
         ]
