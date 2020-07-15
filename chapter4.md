@@ -733,3 +733,73 @@ egress.face.sendNack(nackPkt, egress.endpoint);
 ++m_counters.nOutNacks;
 ```
 
+### 4.5 辅助算法（Helper Algorithms）
+
+> 这些辅助算法都定义在 => [`NFD/daemon/fw/algorithm.hpp`](https://gitea.qjm253.cn/PKUSZ-future-network-lab/MIR/src/branch/master/daemon/fw/algorithm.hpp) 和 [`NFD/daemon/fw/algorithm.cpp`](https://gitea.qjm253.cn/PKUSZ-future-network-lab/MIR/src/branch/master/daemon/fw/algorithm.cpp)
+
+在转发管道（ *forwarding pipelines* ）中使用的几种算法和多种策略被实现为辅助函数。当我们确定更多可重用的算法时，它们也将被实现为辅助函数，而不是在多个地方重复编写相同的代码。下面几个是当前 NFD 实现中几个常见的辅助算法：
+
+- `nfd::fw::wouldViolateScope` ：确定往某个 *Face* 转发兴趣是否会违反基于命名空间的 *scope* 控制。
+- `nfd::fw::findDuplicateNonce` ：搜索PIT条目以查看是否在 *in-record* 或 *out-record* 有重复的 *Nonce* 。
+- `nfd::fw::hasPendingOutRecords` ：确定PIT条目是否具有仍在等待（ *pending* ）中的 *out-record* ，即Data和Nack都没有回来。
+
+#### 4.5.1 FIB lookup
+
+> 下面插入的代码片段取自 => [`NFD/daemon/fw/strategy.cpp` => `Strategy::lookupFib`](https://gitea.qjm253.cn/PKUSZ-future-network-lab/MIR/src/branch/master/daemon/fw/strategy.cpp)
+
+```cpp
+const fib::Entry&
+Strategy::lookupFib(const pit::Entry& pitEntry) const
+```
+
+`Strategy::lookupFib` 考虑 *forwarding hint* 来实现FIB查找过程，具体流程如下：
+
+1. 如果 `Interest` 不携带转发提示（ *forwarding hint* ），即不需要进行移动性处理，则使用兴趣名称（最长前缀匹配算法，3.1.1节）查找FIB。FIB保证最长前缀匹配返回有效的FIB条目；但是，FIB条目可能包含空的NextHop记录集，这通常会导致策略 *reject Interest* （但严格来说，不需要发生）。
+
+   ```cpp
+   onst Fib& fib = m_forwarder.getFib();
+   
+   const Interest& interest = pitEntry.getInterest();
+   // has forwarding hint?
+   if (interest.getForwardingHint().empty()) {
+       // FIB lookup with Interest name
+       const fib::Entry& fibEntry = fib.findLongestPrefixMatch(pitEntry);
+       NFD_LOG_TRACE("lookupFib noForwardingHint found=" << fibEntry.getPrefix());
+       return fibEntry;
+   }
+   ```
+
+2. 如果 `Interest` 带有转发提示（ *forwarding hint* ），则会对其进行处理以提供移动性支持$^7$。
+
+   > $^7$ 此时存在转发提示表示兴趣尚未到达生产者区域，因为在进入生产者区域时，应该在传入的 *Incoming Interest* 管道中删除转发提示。
+
+3. 该过程使用转发提示（ *forwarding* ）中包含的每个委托名称查找FIB，并返回具有至少一个 *nexthop* 的第一个匹配的FIB条目。它不能区分兴趣是在消费者区域（ *consumer region* ）还是默认自由区域（ *orderfault-free zone* ）中。
+
+4. 如果没有一个委托名称与至少一个下一跳的FIB条目匹配，则返回一个空的FIB条目。
+
+   ```cpp
+   const DelegationList& fh = interest.getForwardingHint();
+   // Forwarding hint should have been stripped by incoming Interest pipeline when reaching producer region
+   BOOST_ASSERT(!m_forwarder.getNetworkRegionTable().isInProducerRegion(fh));
+   
+   const fib::Entry* fibEntry = nullptr;
+   for (const Delegation& del : fh) {
+       fibEntry = &fib.findLongestPrefixMatch(del.name);
+       if (fibEntry->hasNextHops()) {
+           if (fibEntry->getPrefix().size() == 0) {
+               // in consumer region, return the default route
+               NFD_LOG_TRACE("lookupFib inConsumerRegion found=" << fibEntry->getPrefix());
+           }
+           else {
+               // in default-free zone, use the first delegation that finds a FIB entry
+               NFD_LOG_TRACE("lookupFib delegation=" << del.name << " found=" << fibEntry->getPrefix());
+           }
+           return *fibEntry;
+       }
+       BOOST_ASSERT(fibEntry->getPrefix().size() == 0); // only ndn:/ FIB entry can have zero nexthop
+   }
+   BOOST_ASSERT(fibEntry != nullptr && fibEntry->getPrefix().size() == 0);
+   return *fibEntry; // only occurs if no delegation finds a FIB nexthop
+   ```
+
+当前实现的局限性在于，当 `Interest` 到达第一个默认的免费路由器（ *default-free router* ）时，该FIB查找过程将根据FIB中的路由成本来唯一确定使用哪个委托。理想情况下，应该通过可以考虑不同上游当前性能的策略做出选择。我们正在这方面探索更好的设计。
