@@ -426,5 +426,171 @@ Forwarder::onIncomingData(const FaceEndpoint& ingress, const Data& data)
    }
    ```
 
-2. 
+2. 然后，管道使用数据匹配算法（ *Data Match algorithm* ，第3.4.2节）检查 `Data` 是否与PIT条目匹配。如果找不到匹配的PIT条目，则将 `Data` 提供给 *Data unsolicited* 管道（第4.3.2节）；如果找到匹配的PIT条目，则将 `Data` 插入到 `ContentStore` 中。请注意，即使管道将 `Data` 插入到 `ContentStore` 中，该数据是否存储以及它在 `ContentStore` 中的停留时间也取决于 `ContentStore` 的接纳和替换策略（ *admission andreplacement policy* $^5$）。
+
+   > $^5$ 当前的实现具有固定的“全部允许”接纳策略，并将“优先级FIFO”作为替换策略，请参见第3.3节。
+
+   ```cpp
+   // PIT match
+   pit::DataMatchResult pitMatches = m_pit.findAllDataMatches(data);
+   if (pitMatches.size() == 0) {
+       // goto Data unsolicited pipeline
+       this->onDataUnsolicited(ingress, data);
+       return;
+   }
+   
+   // CS insert
+   m_cs.insert(data);
+   ```
+
+3. 接下来，管道检查是否仅找到一个匹配的PIT条目或找到多个匹配的PIT条目。该检查确定转发策略是否可以操纵 `Data` 转发。通常，只会找到一个匹配的PIT 条目。多个匹配的PIT条目意味着可以使用一种以上的转发策略来操纵数据转发，这是为了避免策略之间的潜在冲突。
+
+4. 如果仅找到一个匹配的PIT条目，这意味着只有一种转发策略正在控制数据转发，则管道会将PIT到期计时器设置为现在，调用该策略的 `Strategy::afterReceiveData` 回调，将PIT标记为 *satisfied*，并在需要时插入 *Dead Nonce List*  ，并清除PIT条目的 *out records* 。
+
+   ```cpp
+   // when only one PIT entry is matched, trigger strategy: after receive Data
+   if (pitMatches.size() == 1) {
+       auto& pitEntry = pitMatches.front();
+   
+       NFD_LOG_DEBUG("onIncomingData matching=" << pitEntry->getName());
+   
+       // set PIT expiry timer to now
+       this->setExpiryTimer(pitEntry, 0_ms);
+   
+       // trigger strategy: after receive Data
+       this->dispatchToStrategy(*pitEntry,
+                                [&] (fw::Strategy& strategy) { strategy.afterReceiveData(pitEntry, ingress, data); });
+   
+       // mark PIT satisfied
+       pitEntry->isSatisfied = true;
+       pitEntry->dataFreshnessPeriod = data.getFreshnessPeriod();
+   
+       // Dead Nonce List insert if necessary (for out-record of inFace)
+       this->insertDeadNonceList(*pitEntry, &ingress.face);
+   
+       // delete PIT entry's out-record
+       pitEntry->deleteOutRecord(ingress.face);
+   }
+   ```
+
+5. 如果找到多个匹配的PIT条目，则对于每个匹配的PIT条目，管道将记住其待处理的下游，将PIT到期计时器设置为现在，调用策略的 `Strategy::beforeSatisfyInterest` 回调，将PIT标记为 *satisfied* ，并在需要时插入 *Dead Nonce List*  ，并清除PIT条目的 *in and out records*。 最后，管道将把 `Data` 转发到每个待处理的下游，除非待处理的下游 *Face* 与 `Data` 的传入 *Face* 相同，并且 *Face* 不是 *ad-hoc* 的。
+
+   ```cpp
+   // when more than one PIT entry is matched, trigger strategy: before satisfy Interest,
+   // and send Data to all matched out faces
+   else {
+       std::set<std::pair<Face*, EndpointId>> pendingDownstreams;
+       auto now = time::steady_clock::now();
+   
+       for (const auto& pitEntry : pitMatches) {
+           NFD_LOG_DEBUG("onIncomingData matching=" << pitEntry->getName());
+   
+           // remember pending downstreams
+           for (const pit::InRecord& inRecord : pitEntry->getInRecords()) {
+               if (inRecord.getExpiry() > now) {
+                   pendingDownstreams.emplace(&inRecord.getFace(), 0);
+               }
+           }
+   
+           // set PIT expiry timer to now
+           this->setExpiryTimer(pitEntry, 0_ms);
+   
+           // invoke PIT satisfy callback
+           this->dispatchToStrategy(*pitEntry,
+                                    [&] (fw::Strategy& strategy) { strategy.beforeSatisfyInterest(pitEntry, ingress, data); });
+   
+           // mark PIT satisfied
+           pitEntry->isSatisfied = true;
+           pitEntry->dataFreshnessPeriod = data.getFreshnessPeriod();
+   
+           // Dead Nonce List insert if necessary (for out-record of inFace)
+           this->insertDeadNonceList(*pitEntry, &ingress.face);
+   
+           // clear PIT entry's in and out records
+           pitEntry->clearInRecords();
+           pitEntry->deleteOutRecord(ingress.face);
+       }
+   
+       // foreach pending downstream
+       for (const auto& pendingDownstream : pendingDownstreams) {
+           if (pendingDownstream.first->getId() == ingress.face.getId() &&
+               pendingDownstream.second == ingress.endpoint &&
+               pendingDownstream.first->getLinkType() != ndn::nfd::LINK_TYPE_AD_HOC) {
+               continue;
+           }
+           // goto outgoing Data pipeline
+           this->onOutgoingData(data, FaceEndpoint(*pendingDownstream.first, pendingDownstream.second));
+       }
+   }
+   ```
+
+#### 4.3.2 Data Unsolicited Pipeline
+
+> 下面插入的代码片段取自 => [`NFD/daemon/fw/forwarder.cpp` => `Forwarder::onDataUnsolicited`](https://gitea.qjm253.cn/PKUSZ-future-network-lab/MIR/src/branch/master/daemon/fw/forwarder.cpp)
+
+```cpp
+void
+Forwarder::onDataUnsolicited(const FaceEndpoint& ingress, const Data& data)
+```
+
+*Data Unsolicited* 管道是在 `Forwarder::onDataUnsolicited` 方法中实现的，当在 *Incoming data* 管道（第4.3.1节）处理过程中发现 `Data` 是未经请求的时调用。 该管道的输入参数包括 `Data` 及其传入 *Face*。
+
+接着该管道根据当前配置的针对未经请求的 `Data` 的处理策略，决定是删除 `Data` 还是将其添加到 `ContentStore` 。默认情况下，NFD转发配置了 *drop-all* 策略，该策略会丢弃所有未经请求的 `Data` ，因为它们会对转发器造成安全风险。
+
+```cpp
+// accept to cache?
+fw::UnsolicitedDataDecision decision = m_unsolicitedDataPolicy->decide(ingress.face, data);
+if (decision == fw::UnsolicitedDataDecision::CACHE) {
+    // CS insert
+    m_cs.insert(data, true);
+}
+
+NFD_LOG_DEBUG("onDataUnsolicited in=" << ingress << " data=" << data.getName() << " decision=" << decision);
+```
+
+在某些情况下，需要接受未经请求的 `Data`。可以在NFD配置文件中的 `tables.cs_unsolicited_policy` 处更改该策略。
+
+#### 4.3.3 Outgoing Data Pipeline
+
+> 下面插入的代码片段取自 => [`NFD/daemon/fw/forwarder.cpp` => `Forwarder::onOutgoingData`](https://gitea.qjm253.cn/PKUSZ-future-network-lab/MIR/src/branch/master/daemon/fw/forwarder.cpp)
+
+```cpp
+void
+Forwarder::onOutgoingData(const Data& data, const FaceEndpoint& egress)
+```
+
+*Outgoing Data* 管道是在 `Forwarder::onOutgoingData` 方法中实现的，当在 *Incoming Interest* 管道（第4.2.1节）处理过程中在 *ContentStore* 中找到匹配的数据或在 *Incoming Data* 管道处理过程中发现传入的 *Data* 匹配至少一个 PIT 表项时，调用本管道。该管道的输入参数包括 `Data` 和传出 *Face*。
+
+该管道包含以下步骤：
+
+1. 首先在 `/localhost`  *scope* 内检查 `Data` [10]：不能将具有 `/localhost` 前缀的 `Data` 发送到非本地 *Face* $^6$。在此不检查 `/localhop`  *scope* ，因为它的范围规则不限制传出 `Data` 。
+
+   > [10] J. Shi, “Namespace-based scope control,” https://redmine.named-data.net/projects/nfd/wiki/ScopeControl.
+   >
+   > $^6$ 此检查仅在特定情况下有用（请参阅NFD Bug 1644）。
+
+   ```cpp
+   // /localhost scope control
+   bool isViolatingLocalhost = egress.face.getScope() == ndn::nfd::FACE_SCOPE_NON_LOCAL &&
+       scope_prefix::LOCALHOST.isPrefixOf(data.getName());
+   if (isViolatingLocalhost) {
+       NFD_LOG_DEBUG("onOutgoingData out=" << egress << " data=" << data.getName() << " violates /localhost");
+       // (drop)
+       return;
+   }
+   ```
+
+2. 下一步是为流量管理器操作（*traffic manager actions* ，例如执行流量整形等）而保留的。当前版本不包括任何流量管理，但计划在将来的版本中实现。
+
+   ```cpp
+   // TODO traffic manager
+   ```
+
+3. 最后，`Data` 通过传出的 *Face* 发送。
+
+   ```cpp
+   // send Data
+   egress.face.sendData(data, egress.endpoint);
+   ++m_counters.nOutData;
+   ```
 
