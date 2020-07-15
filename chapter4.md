@@ -594,3 +594,142 @@ Forwarder::onOutgoingData(const Data& data, const FaceEndpoint& egress)
    ++m_counters.nOutData;
    ```
 
+### 4.4 Nack 处理路径（Nack Processing Path）
+
+NFD中的Nack处理分为以下管道：
+
+- **Incoming Nack** ：处理传入的 *Nack*
+- **Outgoing Nack** ：准备和传出 *Nack*
+
+#### 4.4.1 Incoming Nack Pipeline
+
+> 下面插入的代码片段取自 => [`NFD/daemon/fw/forwarder.cpp` => `Forwarder::onIncomingNack`](https://gitea.qjm253.cn/PKUSZ-future-network-lab/MIR/src/branch/master/daemon/fw/forwarder.cpp)
+
+```cpp
+void
+Forwarder::onIncomingNack(const FaceEndpoint& ingress, const lp::Nack& nack)
+```
+
+*Incoming Nack* 管道是在 `Forwarder::onIncomingNack` 方法中实现的，由 `Forwarder::startProcessNack` 方法内部调用，该方法由 `Face::afterReceiveNack` 信号触发。该管道的输入参数包括 *Nack* 包及其传入 *Face* 。
+
+首先，如果判断传入 *Face* 不是点对点 *Face*，则无需进一步处理就删除 *Nack* ，因为 *Nack* 的语义仅在点对点链接中定义。
+
+```cpp
+// if multi-access or ad hoc face, drop
+if (ingress.face.getLinkType() != ndn::nfd::LINK_TYPE_POINT_TO_POINT) {
+    NFD_LOG_DEBUG("onIncomingNack in=" << ingress
+                  << " nack=" << nack.getInterest().getName() << "~" << nack.getReason()
+                  << " link-type=" << ingress.face.getLinkType());
+    return;
+}
+```
+
+*Nack* 中携带的 `Interest` 及其传入 *Face* 用于在 PIT 表中查找匹配的 *out record* ，并且最后传出的 *Nonce* 与 *Nack* 中携带的 *Nonce* 相同。 如果发现了这样的 *out records* ，则会将其标记为 *Nacked* ，并注明 *Nacked* 的原因。否则，会将 *Nack* 删除，因为它不再相关。
+
+```cpp
+// PIT match
+shared_ptr<pit::Entry> pitEntry = m_pit.find(nack.getInterest());
+// if no PIT entry found, drop
+if (pitEntry == nullptr) {
+    NFD_LOG_DEBUG("onIncomingNack in=" << ingress << " nack=" << nack.getInterest().getName()
+                  << "~" << nack.getReason() << " no-PIT-entry");
+    return;
+}
+
+// has out-record?
+auto outRecord = pitEntry->getOutRecord(ingress.face);
+// if no out-record found, drop
+if (outRecord == pitEntry->out_end()) {
+    NFD_LOG_DEBUG("onIncomingNack in=" << ingress << " nack=" << nack.getInterest().getName()
+                  << "~" << nack.getReason() << " no-out-record");
+    return;
+}
+
+// if out-record has different Nonce, drop
+if (nack.getInterest().getNonce() != outRecord->getLastNonce()) {
+    NFD_LOG_DEBUG("onIncomingNack in=" << ingress << " nack=" << nack.getInterest().getName()
+                  << "~" << nack.getReason() << " wrong-Nonce " << nack.getInterest().getNonce()
+                  << "!=" << outRecord->getLastNonce());
+    return;
+}
+
+NFD_LOG_DEBUG("onIncomingNack in=" << ingress << " nack=" << nack.getInterest().getName()
+              << "~" << nack.getReason() << " OK");
+
+// record Nack on out-record
+outRecord->setIncomingNack(nack);
+
+// set PIT expiry timer to now when all out-record receive Nack
+if (!fw::hasPendingOutRecords(*pitEntry)) {
+    this->setExpiryTimer(pitEntry, 0_ms);
+}
+```
+
+接着使用查找有效策略算法（ *Find Effective Strategy algorithm* ，第3.6.1节）确定负责PIT条目的有效策略。然后，触发该策略的 `Strategy::afterReceiveNack` 处理流程（第5.1节）。
+
+```cpp
+// trigger strategy: after receive NACK
+this->dispatchToStrategy(*pitEntry,
+                         [&] (fw::Strategy& strategy) { strategy.afterReceiveNack(ingress, nack, pitEntry); });
+```
+
+#### 4.4.2 Outgoing Nack Pipeline
+
+> 下面插入的代码片段取自 => [`NFD/daemon/fw/forwarder.cpp` => `Forwarder::onOutgoingNack`](https://gitea.qjm253.cn/PKUSZ-future-network-lab/MIR/src/branch/master/daemon/fw/forwarder.cpp)
+
+```cpp
+void
+Forwarder::onOutgoingNack(const shared_ptr<pit::Entry>& pitEntry,
+                          const FaceEndpoint& egress, const lp::NackHeader& nack)
+```
+
+*Outgoing Nack* 管道在 `Forwarder::onOutgoingNack` 方法中实现，在 `Strategy::sendNack` 方法中被调用，该方法处理策略的 *Nack* 发送动作（第5.1.2节）。 该管道的输入参数包括PIT条目，传出 *Face* 和 *Nack header* 。
+
+首先，在PIT条目中查询指定的传出 *Face* （下游）的 *in-record* 。该记录是必要的，因为协议要求将最后一个从下游接收到的 `Interest` （包括其Nonce）携带在 *Nack* 包中。如果未找到记录，请中止此过程，因为如果没有此兴趣，将无法发送 *Nack* 。
+
+```cpp
+if (egress.face.getId() == face::INVALID_FACEID) {
+    NFD_LOG_WARN("onOutgoingNack out=(invalid)"
+                 << " nack=" << pitEntry->getInterest().getName() << "~" << nack.getReason());
+    return;
+}
+
+// has in-record?
+auto inRecord = pitEntry->getInRecord(egress.face);
+
+// if no in-record found, drop
+if (inRecord == pitEntry->in_end()) {
+    NFD_LOG_DEBUG("onOutgoingNack out=" << egress
+                  << " nack=" << pitEntry->getInterest().getName()
+                  << "~" << nack.getReason() << " no-in-record");
+    return;
+}
+```
+
+其次，如果下游不是点对点的 *Face* ，则中止此过程，因为 *Nack* 的语义仅在点对点链接上定义。
+
+```cpp
+// if multi-access or ad hoc face, drop
+if (egress.face.getLinkType() != ndn::nfd::LINK_TYPE_POINT_TO_POINT) {
+    NFD_LOG_DEBUG("onOutgoingNack out=" << egress
+                  << " nack=" << pitEntry->getInterest().getName() << "~" << nack.getReason()
+                  << " link-type=" << egress.face.getLinkType());
+    return;
+}
+```
+
+在两次检查都通过之后，将使用提供的 *Nack header* 和 *in-record* 中的 `Interest` 来构造 `Nack` 数据包，并将其通过 *Face* 发送。接着 *in-record* 会被移除，因为它已经被 *Nack satisfied*，除非有重新传输，否则其他 *Nack* 或 *Data* 都不应再发送到同一下游。
+
+```cpp
+// create Nack packet with the Interest from in-record
+lp::Nack nackPkt(inRecord->getInterest());
+nackPkt.setHeader(nack);
+
+// erase in-record
+pitEntry->deleteInRecord(egress.face);
+
+// send Nack on face
+egress.face.sendNack(nackPkt, egress.endpoint);
+++m_counters.nOutNacks;
+```
+
