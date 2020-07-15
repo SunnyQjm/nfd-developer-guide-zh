@@ -1,4 +1,4 @@
-NFD具有智能转发平面（ *smart forwarding plane* ），该平面由 **转发管道** （ *forwarding pipelines* ，第4节）和 **转发策略** （ *forwarding strategies* ，第5节）组成。 **转发管道（或管道）由数据包上的一系列处理步骤组成**。 此外，当某个事件被触发（ *an event is triggered* ）并且匹配一定条件（ *a condition is matched* ）时将开启 *pipeline* 处理流程（ *a pipeline is entered* ）。例如，在接收到`Interest`时，在检测到接收到循环的`Interest`时，在准备将`Interest`从 *face* 转发出去时等。转发策略（或策略）在`packet`转发时进行决策，包括是否，何时以及在何处转发`packet`。NFD可以有多个服务于不同名称空间的策略，并且管道将相应地向策略提供`packet`。
+NFD具有智能转发平面（ *smart forwarding plane* ），该平面由 **转发管道** （ *forwarding pipelines* ，第4节）和 **转发策略** （ *forwarding strategies* ，第5节）组成。 **转发管道（或管道）由数据包上的一系列处理步骤组成**。 此外，当某个事件被触发（ *an event is triggered* ）并且匹配一定条件（ *a condition is matched* ）时将开启 *pipeline* 处理流程（ *a pipeline is entered* ）。例如，在接收到`Interest`时，在检测到接收到循环的`Interest`时，在准备将`Interest`从 *face* 转发出去时等。转发策略（或策略）在`packet`转发时进行决策，包括是否，何时以及在何处转发`packet`。NFD可以有多个服务于不同名称空间的策略，管道将相应地向策略提供`packet`。
 
 图7显示了转发管道和策略的总体工作流程，其中蓝色框代表管道，白色框代表策略的决策点。
 
@@ -10,7 +10,7 @@ NFD具有智能转发平面（ *smart forwarding plane* ），该平面由 **转
 
 管道（ *pipelines* ）处理网络层数据包（`Interest`、`Data`或`Nack`），并且每个数据包都从一个管道传递到另一个管道（在某些情况下通过策略决策点），直到所有处理流程完成为止。管道内的处理使用CS、PIT、Dead Nonce List、FIB、网络区域表和策略选择表，但是管道对后三个表仅具有只读访问权限，因为这些表由相应的管理器管理，并且不直接受数据面流量的影响。
 
-`FaceTable`跟踪NFD中所有活动的 *face* 。它是进入网络层数据包从中进入转发管道进行处理的入口点。管道还可以通过 *face* 发送数据包。
+`FaceTable`跟踪NFD中所有活动的 *face* 。它是网络层数据包进入转发管道进行处理的入口点。管道还可以通过 *face* 发送数据包。
 
 NDN中对`Interest`、`Data`和`Nack`数据包的处理是完全不同的。我们将转发管道分为 **兴趣处理路径** （ *Interest processing path* ）、 **数据处理路径** （ *Data processing path* ）和 **Nack处理路径** （ *Nack processing path* ），这将在以下各节中进行介绍。
 
@@ -58,7 +58,7 @@ Forwarder::onIncomingInterest(const FaceEndpoint& ingress, const Interest& inter
 
    > [10] J. Shi, “Namespace-based scope control,” https://redmine.named-data.net/projects/nfd/wiki/ScopeControl.
 
-2. 对照 *Dead Nonce List* 表（第3.5节）检查传入 `Interest` 的 *Name* 和 *Nonce* 。如果找到匹配项，则将传入的 `Interest` 怀疑为一个循环的 `Interest`，并将其传递给给 **兴趣循环管道** （*Interest loop*）以进行进一步处理（第4.2.2节）。如果未找到匹配项，则处理继续进行到下一步。请注意，与通过PIT条目检测到的重复 *Nonce* 不同（如下所述），由 *Dead Nonce List* 检测到的重复不会导致创建PIT条目，因为为此传入 `Interest` 创建 *in-record* 会导致匹配的数据（如果有）被返回到下游，这是不正确的；另一方面，创建没有记录的PIT条目对将来重复Nonce检测没有帮助。
+2. 对照 *Dead Nonce List* 表（第3.5节）检查传入 `Interest` 的 *Name* 和 *Nonce* 。如果找到匹配项，则将传入的 `Interest` 怀疑为一个循环的 `Interest`，并将其传递给给 **兴趣循环管道** （ *Interest loop* ）以进行进一步处理（第4.2.2节）。如果未找到匹配项，则处理继续进行到下一步。请注意，与通过PIT条目检测到的重复 *Nonce* 不同（如下所述），由 *Dead Nonce List* 检测到的重复不会导致创建PIT条目，因为为此传入 `Interest` 创建 *in-record* 会导致匹配的数据（如果有）被返回到下游，这是不正确的（ *既然一个兴趣包已经被判定为循环兴趣包，正确的行为就是丢弃它，而不是用 Data响应它* ）；另一方面，创建没有记录的PIT条目对将来重复Nonce检测没有帮助。
 
    ```cpp
    // detect duplicate Nonce with Dead Nonce List
@@ -70,7 +70,7 @@ Forwarder::onIncomingInterest(const FaceEndpoint& ingress, const Interest& inter
    }
    ```
 
-3. 如果 `Interest` 带有转发提示（ *forwarding hint* ），则该过程（ *reaching producer region ?* ）通过检查转发提示对象（ *forwarding hint object* ）中的任何委托名称（ *delegation name* ）是否是网络区域表（*network region table*， 第3.2节）中任何区域名称的前缀来确定 `Interest` 是否已到达生产者区域。 如果是这样，转发提示（ *forwarding hint* ）将被删除，因为它已经完成了将 `Interest` 引入生产者区域的任务，并且不再需要。
+3. 如果 `Interest` 带有转发提示（ *forwarding hint* ），则该过程（ *reaching producer region ?* ）通过检查转发提示对象（ *forwarding hint object* ）中的任何委托名称（ *delegation name* ）是否是网络区域表（ *network region table* ， 第3.2节）中任何区域名称的前缀来确定 `Interest` 是否已到达生产者区域。 如果是这样，转发提示（ *forwarding hint* ）将被删除，因为它已经完成了将 `Interest` 引入生产者区域的任务，并且不再需要。
 
    ```cpp
    // strip forwarding hint if Interest has reached producer region
@@ -82,12 +82,16 @@ Forwarder::onIncomingInterest(const FaceEndpoint& ingress, const Interest& inter
    }
    ```
 
-4. 下一步是使用 `Interst` 包中指定的名称和选择器查找现有的或创建新的PIT条目。至此，PIT条目成为传入 `Interest` 和后续管道的处理对象。请注意，NFD在执行 `ContentStore` 查找之前创建了PIT条目。做出此决定的主要原因是，由于 `ContentStore` 可能明显大于PIT，所以查询 `ContentStore` 的代价是高于查询 PIT 的，在下面即将讨论的一些情况下，是可以跳过CS查找，所以在查询 `ContentStore` 之前查询PIT或创建相应的表项是有助于减小查询开销的。
+4. 下一步是使用 `Interst` 包中指定的名称和选择器查找现有的或创建新的PIT条目。至此，PIT条目成为对该传入 `Interest` 进行后续处理的管道的处理对象。请注意，NFD在执行 `ContentStore` 查找之前创建了PIT条目。做出此决定的主要原因是，由于 `ContentStore` 可能明显大于PIT，所以查询 `ContentStore` 的代价是高于查询 PIT 的，在下面即将讨论的一些情况下，是可以跳过CS查找，所以在查询 `ContentStore` 之前查询PIT或创建相应的表项是有助于减小查询开销的。
 
    ```cpp
    // PIT insert
    shared_ptr<pit::Entry> pitEntry = m_pit.insert(interest).first;
    ```
+
+   ![图6  PIT及其相关的entities](assets/1583238384240.png)
+
+   <center>PIT及其相关的entities</center>
 
 5. 在进一步处理传入 `Interest` 之前，查询 PIT 中对应表项的 *in-records* （ *这边查询的是同一个 PIT entry 的 in-record 列表* ）。如果在不同 *Face* 的记录中找到匹配项（ *即找到一个 in-record 记录，它的 Nonce 和传入 `Interest` 的 Nonce 是一样的，但是是从不同的 Face传入的* ），则可能是由于 `Interest` 循环或者是同一个 `Interest` 沿多个不同的路径到达，传入 `Interest` 被视为重复（ *loop* ）。并传递给兴趣循环管道（ *Interest loop* ）进行进一步处理（第4.2.2节）。 否则，处理继续。
 
@@ -143,7 +147,7 @@ Forwarder::onIncomingInterest(const FaceEndpoint& ingress, const Interest& inter
 
 7. 然后，管道将测试 `Interest` 是否未决（ *is pending ?* ），即PIT条目是否已经具有相同或另一个传入Face的另一个记录。回想一下，NFD的PIT条目不仅可以代表未决 `Interest` ，而且还可以代表最近满足的 `Interest` （第3.4.1节）。此测试等效于CCN节点模型[9]中的“具有PIT条目”，其PIT仅包含未决兴趣。=> **可以简单的认为，检查传入的 `Interest` 的PIT表项中是否包含其它记录，如果包含，这个兴趣包就是未决的**
 
-8.  如果 `Interest` 是非未决的（ *not pending* ），则去 `ContentStore` 查询是否有对应的匹配项（`Cs::find`，第3.3.1节）。否则，不需要进行CS查找，直接传递给 *ContentStore miss* 管道处理，因为未决的 `Interest` 意味着先前查询过 `ContentStore` ，且在 `ContentStore` 中未能命中 。如果 `Interest` 是未决的（ *pending* ），根据CS是否匹配，选择将 `Interest` 传递给 *ContentStore miss* 管道（第4.2.4节）还是 *ContentStore hit* 管道（第4.2.3节）处理。
+8.  如果 `Interest` 是非未决的（ *not pending* ），则去 `ContentStore` 查询是否有对应的匹配项（`Cs::find`，第3.3.1节）。否则，不需要进行CS查找，直接传递给 *ContentStore miss* 管道处理，因为未决的 `Interest` 意味着先前查询过 `ContentStore` ，且在 `ContentStore` 中未能命中 。对于非未决的 `Interest` ，根据CS是否匹配，选择将 `Interest` 传递给 *ContentStore miss* 管道（第4.2.4节）还是 *ContentStore hit* 管道（第4.2.3节）处理。
 
    ```cpp
    // is pending?
@@ -198,7 +202,7 @@ Forwarder::onContentStoreHit(const FaceEndpoint& ingress, const shared_ptr<pit::
                              const Interest& interest, const Data& data)
 ```
 
-*ContentStore Hit* 管道在 `Forwarder::onContentStoreHit` 方法中实现，当在 *incoming Interest* 管道（第4.2.1节）中执行 `ContentStore` 查找（第3.3.1节）并找到匹配项之后触发 *ContentStore Hit* 管道处理逻辑。该管道的输入参数包括 `Interest`，其传入 *Face* ，PIT条目和匹配的数据包。/ localhost
+*ContentStore Hit* 管道在 `Forwarder::onContentStoreHit` 方法中实现，当在 *incoming Interest* 管道（第4.2.1节）中执行 `ContentStore` 查找（第3.3.1节）并找到匹配项之后触发 *ContentStore Hit* 管道处理逻辑。该管道的输入参数包括 `Interest`，其传入 *Face* ，PIT条目和匹配的数据包。
 
 如图9所示，此管道首先将 `Interest` 的到期计时器设置为当前时间，然后调用 `Interest` 所选策略的 `Strategy::afterContentStoreHit` 回调。
 
@@ -220,6 +224,13 @@ this->setExpiryTimer(pitEntry, 0_ms);
 // dispatch to strategy: after Content Store hit
 this->dispatchToStrategy(*pitEntry,
                          [&] (fw::Strategy& strategy) { strategy.afterContentStoreHit(pitEntry, ingress, data); });
+
+
+// dispatchToStrtegy 实现
+template<class Function>
+void dispatchToStrategy(pit::Entry& pitEntry, Function trigger) {
+    trigger(m_strategyChoice.findEffectiveStrategy(pitEntry));
+}
 ```
 
 #### 4.2.4 ContentStore Miss Pipeline
@@ -238,7 +249,7 @@ Forwarder::onContentStoreMiss(const FaceEndpoint& ingress,
 
 如图10所示，该管道执行以下步骤：
 
-1. 根据传入的 `Interest` 以及对应的传入 *Face* 决定在相应 PIT 条目中插入或者更新 *in-record* 。如果相应 PIT 条目中已经存在相同传入 *Face* 的 *in-record* 记录，（例如，兴趣正在由同一下游重新传输），只需使用新观察到的 `Interest` 的 *Nonce* 和到期时间（*expiration time*）更新原来的 *in-record* 记录即可。记录中的到期时间由兴趣数据包中的 *InterestLifetime* 字段控制； 如果省略 *InterestLifetime* ，则使用默认的4秒。
+1. 根据传入的 `Interest` 以及对应的传入 *Face* 决定在相应 PIT 条目中插入或者更新 *in-record* 。如果相应 PIT 条目中已经存在相同传入 *Face* 的 *in-record* 记录，（例如，兴趣正在由同一下游重新传输），只需使用新观察到的 `Interest` 的 *Nonce* 和到期时间（ *expiration time* ）更新原来的 *in-record* 记录即可。记录中的到期时间由兴趣数据包中的 *InterestLifetime* 字段控制； 如果省略 *InterestLifetime* ，则使用默认的4秒。
 
    ```cpp
    NFD_LOG_DEBUG("onContentStoreMiss interest=" << interest.getName());
@@ -260,7 +271,7 @@ Forwarder::onContentStoreMiss(const FaceEndpoint& ingress,
    this->setExpiryTimer(pitEntry, time::duration_cast<time::milliseconds>(lastExpiryFromNow));
    ```
 
-3. 如果 `Interest` 在其NDNLPv2 header 中携带 *NextHopFaceId* 字段，则管道将遵循此字段。在FaceTable中查找所选的下一跳  *Face*。如果找到 *Face*，则执行 *outgoing Interest* 管道（第4.2.5节）；如果该 *Face* 不存在，则删除 `Interest`。
+3. 如果 `Interest` 在其NDNLPv2 header 中携带 *NextHopFaceId* 字段，则管道将遵循此字段。在FaceTable中查找所选的下一跳  *Face* 。如果找到 *Face* ，则执行 *outgoing Interest* 管道（第4.2.5节）；如果该 *Face* 不存在，则删除 `Interest`。
 
    ```cpp
    // has NextHopFaceId?
@@ -301,7 +312,7 @@ Forwarder::onOutgoingInterest(const shared_ptr<pit::Entry>& pitEntry,
 
 *Outgoing Interest* 管道在 `Forwarder::onOutgoingInterest` 方法中实现，并一般在 `Strategy::sendInterest` 方法内调用（ *也可能如上述 4.2.4 节所述，兴趣包携带了 NextHopFaceId 字段，此时也可能不经过策略决策，直接触发 Outgoing Interest 管道* ），该方法处理策略的发送兴趣动作（第5.1.2节）。该管道的输入参数包括PIT条目，传出 *Face* 和 `Interest` 。请注意，`Interest` 不是进入管道时的参数。管道步骤要么直接使用PIT条目执行检查，要么获取对存储在PIT条目内的 `Interest` 的引用。
 
-该管道首先在PIT条目中为指定的传出 *Face* 插入一个 *out-record*，或者为同一 *Face* 更新一个现有的 *out-record*。 在这两种情况下，PIT记录都将记住最后一个传出兴趣数据包的 *Nonce* ，这对于匹配传入的Nacks很有用，还有到期时间戳，它是当前时间加上 *InterestLifetime* 。最后， `Interest` 被发送到传出的 `Face` 。
+该管道首先在PIT条目中为指定的传出 *Face* 插入一个 *out-record* ，或者为同一 *Face* 更新一个现有的 *out-record* 。 在这两种情况下，PIT记录都将记住最后一个传出兴趣数据包的 *Nonce* ，这对于匹配传入的Nacks很有用，还有到期时间戳，它是当前时间加上 *InterestLifetime* 。最后， `Interest` 被发送到传出的 `Face` 。
 
 > PIT 表的结构参见 => [3.4 PIT](https://sunnyqjm.github.io/nfd-developer-guide-zh/#/chapter3?id=_34-兴趣表（pit）)
 
@@ -406,7 +417,7 @@ Forwarder::onIncomingData(const FaceEndpoint& ingress, const Data& data)
 
 如图11所示，该管道包括以下步骤：
 
-1. 第一步是检查 `Data` 是否违反了 `/localhost` *scope* [10]。 如果 `Data` 来自非本地 *Face*，但其名称以 `/localhost` 前缀开头，则该 `Data` 将违反 *scope* 并被删除。此检查可防止恶意发送者。兼容的 *forwarder* 永远不会将 `/localhost` 数据发送到非本地 *Face* 。请注意，此处未选中 `/localhop` 范围，因为其范围规则并不限制传入的 `Data`。
+1. 第一步是检查 `Data` 是否违反了 `/localhost` *scope* [10]。 如果 `Data` 来自非本地 *Face* ，但其名称以 `/localhost` 前缀开头，则该 `Data` 将违反 *scope* 并被删除。此检查可防止恶意发送者。兼容的 *forwarder* 永远不会将 `/localhost` 数据发送到非本地 *Face* 。请注意，此处未选中 `/localhop` 范围，因为其范围规则并不限制传入的 `Data`。
 
    > [10] J. Shi, “Namespace-based scope control,” https://redmine.named-data.net/projects/nfd/wiki/ScopeControl.
 
@@ -445,7 +456,7 @@ Forwarder::onIncomingData(const FaceEndpoint& ingress, const Data& data)
 
 3. 接下来，管道检查是否仅找到一个匹配的PIT条目或找到多个匹配的PIT条目。该检查确定转发策略是否可以操纵 `Data` 转发。通常，只会找到一个匹配的PIT 条目。多个匹配的PIT条目意味着可以使用一种以上的转发策略来操纵数据转发，这是为了避免策略之间的潜在冲突。
 
-4. 如果仅找到一个匹配的PIT条目，这意味着只有一种转发策略正在控制数据转发，则管道会将PIT到期计时器设置为现在，调用该策略的 `Strategy::afterReceiveData` 回调，将PIT标记为 *satisfied*，并在需要时插入 *Dead Nonce List*  ，并清除PIT条目的 *out records* 。
+4. 如果仅找到一个匹配的PIT条目，这意味着只有一种转发策略正在控制数据转发，则管道会将PIT到期计时器设置为现在，调用该策略的 `Strategy::afterReceiveData` 回调，将PIT标记为 *satisfied* ，并在需要时插入 *Dead Nonce List*  ，并清除PIT条目的 *out records* 。
 
    ```cpp
    // when only one PIT entry is matched, trigger strategy: after receive Data
@@ -612,7 +623,7 @@ Forwarder::onIncomingNack(const FaceEndpoint& ingress, const lp::Nack& nack)
 
 *Incoming Nack* 管道是在 `Forwarder::onIncomingNack` 方法中实现的，由 `Forwarder::startProcessNack` 方法内部调用，该方法由 `Face::afterReceiveNack` 信号触发。该管道的输入参数包括 *Nack* 包及其传入 *Face* 。
 
-首先，如果判断传入 *Face* 不是点对点 *Face*，则无需进一步处理就删除 *Nack* ，因为 *Nack* 的语义仅在点对点链接中定义。
+首先，如果判断传入 *Face* 不是点对点 *Face* ，则无需进一步处理就删除 *Nack* ，因为 *Nack* 的语义仅在点对点链接中定义。
 
 ```cpp
 // if multi-access or ad hoc face, drop
