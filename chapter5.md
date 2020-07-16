@@ -16,7 +16,7 @@
 
 #### 5.1.1 触发器（Triggers）
 
-> 下面插入的代码片段来自：[`NFD/daemon/fw/strategy.hpp`](https://gitea.qjm253.cn/PKUSZ-future-network-lab/MIR/src/branch/master/daemon/fw/strategy.hpp) 和 [`NFD/daemon/fw/strategy.cpp`](https://gitea.qjm253.cn/PKUSZ-future-network-lab/MIR/src/branch/master/daemon/fw/strategy.cpp)
+> 下面插入的代码片段来自：[`NFD/daemon/fw/strategy.hpp`](https://gitea.qjm253.cn/SunnyQjm/MIR/src/branch/master/daemon/fw/strategy.hpp) 和 [`NFD/daemon/fw/strategy.cpp`](https://gitea.qjm253.cn/SunnyQjm/MIR/src/branch/master/daemon/fw/strategy.cpp)
 
 触发器是策略程序的入口点。触发器被声明为 `nfd::fw::Strategy` 类的虚拟方法，并且希望被子类覆盖以实现不同子类特定的行为。
 
@@ -219,7 +219,7 @@ afterReceiveNack(const FaceEndpoint& ingress, const lp::Nack& nack,
 
 #### 5.1.2 操作（Actions）
 
-> 下面插入的代码片段来自：[`NFD/daemon/fw/strategy.hpp`](https://gitea.qjm253.cn/PKUSZ-future-network-lab/MIR/src/branch/master/daemon/fw/strategy.hpp) 和 [`NFD/daemon/fw/strategy.cpp`](https://gitea.qjm253.cn/PKUSZ-future-network-lab/MIR/src/branch/master/daemon/fw/strategy.cpp)
+> 下面插入的代码片段来自：[`NFD/daemon/fw/strategy.hpp`](https://gitea.qjm253.cn/SunnyQjm/MIR/src/branch/master/daemon/fw/strategy.hpp) 和 [`NFD/daemon/fw/strategy.cpp`](https://gitea.qjm253.cn/SunnyQjm/MIR/src/branch/master/daemon/fw/strategy.cpp)
 
 操作（ *Action* ）是转发策略（ *forwarding strategy* ）做出的决策。操作（ *Action* ）被实现为 `nfd::fw::Strategy` 类的非虚拟保护方法。
 
